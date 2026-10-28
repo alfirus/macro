@@ -783,6 +783,35 @@ fn issues_number_and_state_helpers() {
 }
 
 #[test]
+fn issues_repository_id_uses_numeric_id() {
+    // Span fields must use the numeric `repository.id`, never the owner
+    // login (which can be a username).
+    let event = ValidatedGithubWebhookEvent::new(
+        "issues".to_string(),
+        serde_json::json!({
+            "action": "opened",
+            "issue": { "number": 5, "state": "open" },
+            "repository": {
+                "id": 123456,
+                "name": "macro",
+                "owner": { "login": "some-user" },
+            },
+        }),
+    );
+    assert_eq!(event.repository_id(), Some(123456));
+    assert_eq!(event.repo_owner(), Some("some-user"));
+
+    let without_repo = ValidatedGithubWebhookEvent::new(
+        "issues".to_string(),
+        serde_json::json!({
+            "action": "opened",
+            "issue": { "number": 5, "state": "open" },
+        }),
+    );
+    assert_eq!(without_repo.repository_id(), None);
+}
+
+#[test]
 fn issues_event_backed_by_pr_stays_with_pr_pipeline() {
     let event = ValidatedGithubWebhookEvent::new(
         "issues".to_string(),

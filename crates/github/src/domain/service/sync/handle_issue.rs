@@ -34,7 +34,14 @@ impl<
     ///
     /// PR-backed `issues` events never reach here (the dispatcher routes them
     /// to the pull request pipeline); this is a defensive second guard.
-    #[tracing::instrument(skip(self, event), err)]
+    #[tracing::instrument(
+        skip(self, event),
+        fields(
+            repository_id = ?event.repository_id(),
+            issue_number = ?event.issue_number(),
+        ),
+        err
+    )]
     pub(crate) async fn handle_issue_event(
         &self,
         event: &ValidatedGithubWebhookEvent,
@@ -65,7 +72,16 @@ impl<
     ///
     /// Applies the status from [`ValidatedGithubWebhookEvent::task_status_for_event`]
     /// when the action warrants one (`opened`/`reopened` → `Not Started`).
-    #[tracing::instrument(skip(self, event), err)]
+    #[tracing::instrument(
+        skip(self, event),
+        fields(
+            repository_id = ?event.repository_id(),
+            issue_number = ?event.issue_number(),
+            task_count = tracing::field::Empty,
+            status = tracing::field::Empty,
+        ),
+        err
+    )]
     async fn handle_issue_sync(
         &self,
         event: &ValidatedGithubWebhookEvent,
@@ -86,6 +102,8 @@ impl<
         }
 
         let resolved = self.resolve_tasks(&task_ids).await;
+
+        tracing::Span::current().record("task_count", resolved.validated_task_ids.len() as u64);
 
         if resolved.validated_task_ids.is_empty() {
             tracing::debug!("no valid task documents found for extracted IDs");
@@ -132,6 +150,7 @@ impl<
         }
 
         if let Some(status) = event.task_status_for_event() {
+            tracing::Span::current().record("status", status);
             self.update_task_statuses(&resolved.doc_ids, status).await;
         } else {
             tracing::trace!("no status update warranted for this issues event");
@@ -147,7 +166,16 @@ impl<
     /// tracked for the issue, then moves them to `Completed` (closed as
     /// completed) or back to `Not Started` (closed as not planned/duplicate).
     /// Does NOT post a new bot comment.
-    #[tracing::instrument(skip(self, event), err)]
+    #[tracing::instrument(
+        skip(self, event),
+        fields(
+            repository_id = ?event.repository_id(),
+            issue_number = ?event.issue_number(),
+            task_count = tracing::field::Empty,
+            status = tracing::field::Empty,
+        ),
+        err
+    )]
     async fn handle_issue_close(
         &self,
         event: &ValidatedGithubWebhookEvent,
@@ -190,6 +218,8 @@ impl<
         let resolved = self.resolve_tasks(&all_task_ids).await;
 
         let status = event.task_status_for_event().unwrap_or("Not Started");
+        tracing::Span::current().record("task_count", resolved.doc_ids.len() as u64);
+        tracing::Span::current().record("status", status);
         tracing::trace!(
             status,
             doc_count = resolved.doc_ids.len(),
