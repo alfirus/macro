@@ -10135,6 +10135,7 @@
       "crates/ai_toolset",
       "crates/bot_id",
       "crates/cowlike",
+      "crates/cursor_api_key",
       "crates/fusionauth",
       "crates/genai_telemetry",
       "crates/macro_auth",
