@@ -64,6 +64,11 @@ export type TaskComposerHost = {
   resolveAppLink: MentionLinkResolver | undefined;
   /** Whether the composer floats over the layout rather than filling a split. */
   isPopover: Accessor<boolean>;
+  /**
+   * Opens the touch sheet at a fixed height for as long as the calling owner
+   * lives, so the composer's body can fill it.
+   */
+  fillSheet(): void;
   setDisplayName(name: string): void;
   close(): void;
   /** Opens another composer on a recovered submission. */
@@ -582,10 +587,6 @@ export function createTaskComposer(
     if (container) {
       attachHotkeys(container);
     }
-    // An empty title (e.g. a task started from an email) waits for the user.
-    if (!title().trim()) {
-      requestAnimationFrame(() => titleEditorRoot?.focus());
-    }
   });
 
   registerHotkey({
@@ -647,9 +648,17 @@ export function createTaskComposer(
     setTitleEditorRoot: (el: HTMLDivElement) => {
       titleEditorRoot = el;
     },
+    /**
+     * Whether the title takes focus as the composer opens. Always on touch,
+     * where the opening tap raised the keyboard for it
+     * (`raiseKeyboardForNewTaskTitle`); elsewhere a title that already has
+     * text (a task started from an email) waits for the user.
+     */
+    autofocusTitle: isTouchDevice() || !title().trim(),
     editorConfig,
     portalScope,
     isPopover: host.isPopover,
+    fillSheet: host.fillSheet,
     isCreating,
     errorMessage,
     setErrorMessage,
