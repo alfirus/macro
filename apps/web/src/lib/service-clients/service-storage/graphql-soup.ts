@@ -78,11 +78,12 @@ import {
   type Client as GraphqlWsClient,
 } from 'graphql-ws';
 import { batch, createSignal, untrack } from 'solid-js';
-import { match, P } from 'ts-pattern';
+import { match } from 'ts-pattern';
 import { delegateChannelNotificationRefresh } from '../../queries/channel/notification-refresh';
 import { soupOptimisticResolvers } from '../../queries/optimistic-resolvers';
 import { createCacheRecovery } from './cache-recovery';
 import { emailCacheDeletionKeys } from './email-cache-deletions';
+import { emailThreadSortTs } from './email-thread-sort';
 import type { SoupApiItem } from './generated/schemas/soupApiItem';
 import type { SoupCalendarEventSoupPropertiesField } from './generated/schemas/soupCalendarEventSoupPropertiesField';
 import type { SoupCalendarEventTime } from './generated/schemas/soupCalendarEventTime';
@@ -106,13 +107,17 @@ import {
   type SoupQuery,
 } from './graphql/generated/graphql';
 import { shouldRetryGraphqlMutation } from './graphql-mutation-retry';
+import { notificationReceiptExchange } from './graphql-notification-receipt';
 import {
   createGraphqlSoupSubscriptionsLifecycle,
   createGraphqlSoupWebSocketUrlResolver,
+  publishNotificationPatch,
   SOUP_GRAPHQL_WEBSOCKET_RETRY_ATTEMPTS,
   shouldRetryGraphqlSoupWebSocket,
   waitToRetryGraphqlSoupWebSocket,
 } from './graphql-soup-websocket';
+
+export { emailThreadSortTs } from './email-thread-sort';
 
 const dssHost = SERVER_HOSTS['document-storage-service'];
 const QUEUE_CLEAR_INSPECTION_TIMEOUT_MS = 1000;
@@ -477,6 +482,7 @@ function getUncachedRealtimeClient(): Client {
     preferGetMethod: false,
     exchanges: [
       networkRevalidationExchange(),
+      notificationReceiptExchange(publishNotificationPatch),
       graphqlSoupSubscriptionExchange(websocketClient),
       fetchExchange,
     ],
@@ -495,8 +501,12 @@ let cacheInitializationFailed = false;
 const cacheRecovery = createCacheRecovery(() =>
   Telemetry.span('graphql.cache_recovery', async (span) => {
     const session = cacheSessionGeneration;
-    cachedClient = undefined;
-    getGraphqlSoupClient();
+    // A host whose read was refused mid-handoff is still running; prove it
+    // readable now instead of stacking another registration on it.
+    if (!cachedCacheHost || cachedCacheHost.disabled) {
+      cachedClient = undefined;
+      getGraphqlSoupClient();
+    }
     const host = cachedCacheHost;
     if (!host || host.disabled)
       throw new Error('Local cache could not restart.');
@@ -817,6 +827,7 @@ export function getGraphqlSoupClient(): Client {
             mutationQueueTelemetry,
             delegateRevalidation: delegateChannelNotificationRefresh,
           }),
+          notificationReceiptExchange(publishNotificationPatch),
           graphqlSoupSubscriptionExchange(graphqlWsClient),
           fetchExchange,
         ],
@@ -1703,7 +1714,7 @@ export function mapGraphqlNotification(
     notification_metadata: mapGraphqlNotificationMetadata(record.metadata),
     entity_id: record.entityId,
     entity_type:
-      record.entityType.toLowerCase() as ApiUserNotification['entity_type'],
+      record.targetEntityType.toLowerCase() as ApiUserNotification['entity_type'],
     sent: record.sent,
     state: notificationStateFromGraphql(record.state),
     created_at: record.createdAt,
@@ -1717,42 +1728,6 @@ function mapGraphqlNotifications(
   notifications: GraphqlNotification[] | undefined
 ) {
   return notifications?.map(mapGraphqlNotification);
-}
-
-function latestTimestamp(
-  ...timestamps: (string | null | undefined)[]
-): string | undefined {
-  return timestamps.reduce<string | undefined>(
-    (latest, timestamp) =>
-      typeof timestamp === 'string' &&
-      (latest === undefined || Date.parse(timestamp) > Date.parse(latest))
-        ? timestamp
-        : latest,
-    undefined
-  );
-}
-
-/** The server's per-view sort key, recomputed from the thread's own facts so a
- * cache re-read never dates a row by the view that fetched the thread last.
- * Mirrors `get_sort_timestamp_field` in crates/email; INBOX is the server's
- * default view. */
-export function emailThreadSortTs(
-  thread: {
-    latestInboundMessageTs?: string | null;
-    reminderReturnedAt?: string | null;
-    latestOutboundMessageTs?: string | null;
-    latestNonSpamMessageTs?: string | null;
-    updatedAt: string;
-  },
-  emailView: GraphqlEmailView | null | undefined
-): string {
-  const key = match(emailView)
-    .with('SENT', () => thread.latestOutboundMessageTs)
-    .with('INBOX', P.nullish, () =>
-      latestTimestamp(thread.latestInboundMessageTs, thread.reminderReturnedAt)
-    )
-    .otherwise(() => thread.latestNonSpamMessageTs);
-  return key ?? thread.updatedAt;
 }
 
 /** An agent session's own row fields in the REST shape, without the
@@ -1924,6 +1899,7 @@ export function mapGraphqlSoupItem(
             providerId: entity.providerId ?? undefined,
             ownerId: entity.ownerId,
             inboxVisible: entity.inboxVisible,
+            hasReceivedMail: entity.hasReceivedMail,
             name: entity.emailName ?? undefined,
             snippet: entity.snippet ?? undefined,
             senderEmail: entity.senderEmail ?? undefined,

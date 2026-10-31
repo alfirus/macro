@@ -77,7 +77,9 @@ impl<
         fields(
             repository_id = ?event.repository_id(),
             issue_number = ?event.issue_number(),
-            task_count = tracing::field::Empty,
+            task_id_count = tracing::field::Empty,
+            resolved_task_count = tracing::field::Empty,
+            new_task_count = tracing::field::Empty,
             status = tracing::field::Empty,
         ),
         err
@@ -95,6 +97,7 @@ impl<
             task_ids = ?task_ids.iter().map(|t| t.to_task_id_string()).collect::<Vec<_>>(),
             "extracted task IDs from issue text"
         );
+        tracing::Span::current().record("task_id_count", task_ids.len() as u64);
 
         if task_ids.is_empty() {
             tracing::debug!("no task IDs found in issue text");
@@ -103,7 +106,10 @@ impl<
 
         let resolved = self.resolve_tasks(&task_ids).await;
 
-        tracing::Span::current().record("task_count", resolved.validated_task_ids.len() as u64);
+        tracing::Span::current().record(
+            "resolved_task_count",
+            resolved.validated_task_ids.len() as u64,
+        );
 
         if resolved.validated_task_ids.is_empty() {
             tracing::debug!("no valid task documents found for extracted IDs");
@@ -121,6 +127,7 @@ impl<
         } else {
             resolved.validated_task_ids.clone()
         };
+        tracing::Span::current().record("new_task_count", new_task_ids.len() as u64);
 
         if !new_task_ids.is_empty() {
             let new_task_id_set: HashSet<&MacroTaskId> = new_task_ids.iter().collect();
@@ -171,7 +178,9 @@ impl<
         fields(
             repository_id = ?event.repository_id(),
             issue_number = ?event.issue_number(),
-            task_count = tracing::field::Empty,
+            issue_text_task_count = tracing::field::Empty,
+            total_task_count = tracing::field::Empty,
+            resolved_task_count = tracing::field::Empty,
             status = tracing::field::Empty,
         ),
         err
@@ -193,6 +202,7 @@ impl<
             task_ids = ?task_id_set.iter().map(|t| t.to_task_id_string()).collect::<Vec<_>>(),
             "extracted task IDs from issue text"
         );
+        tracing::Span::current().record("issue_text_task_count", task_id_set.len() as u64);
 
         if let Some(key) = Self::github_issue_key(event) {
             match self.repo.get_task_ids(key).await {
@@ -214,11 +224,13 @@ impl<
             return Ok(());
         }
 
+        tracing::Span::current().record("total_task_count", task_id_set.len() as u64);
+
         let all_task_ids: Vec<_> = task_id_set.into_iter().collect();
         let resolved = self.resolve_tasks(&all_task_ids).await;
 
         let status = event.task_status_for_event().unwrap_or("Not Started");
-        tracing::Span::current().record("task_count", resolved.doc_ids.len() as u64);
+        tracing::Span::current().record("resolved_task_count", resolved.doc_ids.len() as u64);
         tracing::Span::current().record("status", status);
         tracing::trace!(
             status,
